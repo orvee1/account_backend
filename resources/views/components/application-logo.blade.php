@@ -1,0 +1,1 @@
+<img src="{{ asset('images/logo.png') }}" alt="cloudbook" width="100" height="100">
