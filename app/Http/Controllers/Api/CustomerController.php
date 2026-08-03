@@ -107,6 +107,13 @@ class CustomerController extends Controller
         return response()->json(['message' => 'Customer deleted (soft).']);
     }
 
+    public function generateCode()
+    {
+        return response()->json([
+            'code' => Customer::generateCustomerNumber(),
+        ]);
+    }
+
     // POST /api/customers/{id}/restore
     public function restore($id)
     {

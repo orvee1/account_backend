@@ -19,6 +19,11 @@ class Customer extends Model
         'opening_balance_date' => 'date',
     ];
 
+    public static function generateCustomerNumber(): string
+    {
+        return 'C' . now()->format('ymd') . '-' . substr((string) now()->timestamp, -4);
+    }
+
     // Always scope by current user's company
     protected static function booted(): void
     {

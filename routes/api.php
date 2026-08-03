@@ -162,11 +162,13 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::apiResource('purchase-returns', PurchaseReturnController::class);
 
     // Vendors / Warehouses
+    Route::get('vendors/generate-code', [VendorController::class, 'generateCode']);
     Route::apiResource('vendors', VendorController::class);
     Route::apiResource('warehouses', WarehouseController::class);
     Route::post('warehouses/{warehouse}/make-default', [WarehouseController::class, 'makeDefault']);
 
     // Customers
+    Route::get('customers/generate-code', [CustomerController::class, 'generateCode']);
     Route::apiResource('customers', CustomerController::class);
     Route::post('customers/{customer}/restore', [CustomerController::class, 'restore'])
         ->name('customers.restore');

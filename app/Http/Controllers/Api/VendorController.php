@@ -106,6 +106,14 @@ class VendorController extends Controller
         return new VendorResource($vendor);
     }
 
+    public function generateCode()
+    {
+        $companyId = auth()->user()?->company_id;
+        return response()->json([
+            'code' => Vendor::generateVendorNumber($companyId),
+        ]);
+    }
+
     /**
      * DELETE /api/vendors/{vendor}
      */
