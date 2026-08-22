@@ -26,7 +26,7 @@ class AccountLedgerSeeder extends Seeder
         $cashAccount = ChartAccount::firstOrCreate(
             [
                 'company_id' => $company->id,
-                'name' => 'Cash',
+                'name' => 'Cash & Cash Equivalent',
                 'code' => '1010',
             ],
             [

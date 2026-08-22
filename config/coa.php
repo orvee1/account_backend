@@ -14,27 +14,12 @@ return [
                 'type' => 'group',
                 'children' => [
                     [
-                        'name' => 'Cash',
+                        'name' => 'Cash & Cash Equivalent',
                         'code' => '1.1.1',
                         'type' => 'group',
                         'children' => [
                             ['name' => 'Cash in Hand', 'code' => '1.1.1.1', 'type' => 'ledger'],
-                        ],
-                    ],
-                    [
-                        'name' => 'Cash at Bank',
-                        'code' => '1.1.2',
-                        'type' => 'group',
-                        'children' => [
-                            [
-                                'name' => 'Bank A/C-Current',
-                                'code' => '1.1.2.1',
-                                'type' => 'group',
-                                'children' => [
-                                    ['name' => 'Main Bank Account', 'code' => '1.1.2.1.1', 'type' => 'ledger'],
-                                ],
-                            ],
-                            ['name' => 'Bank A/C-Saving',   'code' => '1.1.2.2', 'type' => 'group'],
+                            ['name' => 'Cash at Bank', 'code' => '1.1.1.2', 'type' => 'group'],
                         ],
                     ],
                     [
@@ -57,7 +42,16 @@ return [
                         'code' => '1.1.5',
                         'type' => 'group',
                         'children' => [
-                            ['name' => 'Inventory Ledger', 'code' => '1.1.5.1', 'type' => 'ledger'],
+                            [
+                                'name' => 'Stock in Hand',
+                                'code' => '1.1.5.1',
+                                'type' => 'group',
+                                'children' => [
+                                    ['name' => 'Stock in Hand Ledger', 'code' => '1.1.5.1.1', 'type' => 'ledger'],
+                                ],
+                            ],
+                            ['name' => 'Work-In-Progress', 'code' => '1.1.5.2', 'type' => 'group'],
+                            ['name' => 'Raw Material', 'code' => '1.1.5.3', 'type' => 'group'],
                         ],
                     ],
                     ['name' => 'Short-Term Investments',    'code' => '1.1.6', 'type' => 'group'],

@@ -31,18 +31,38 @@ class ProductController extends Controller
 
     public function show(Product $product)
     {
-        return response()->json($product->load(['units','comboItems.itemProduct']));
+        $service = app(ProductService::class);
+        $payload = $product->load(['units','comboItems.itemProduct'])->toArray();
+        $payload['can_edit_costing_price'] = $service->canEditCostingPrice($product);
+
+        return response()->json($payload);
     }
 
     public function update(ProductRequest $request, Product $product)
     {
+        $service = app(ProductService::class);
         $data = $request->validated();
-        $updated = app(ProductService::class)->update($product->id, $data);
+
+        if (array_key_exists('costing_price', $data) && !$service->canEditCostingPrice($product)) {
+            return response()->json([
+                'message' => 'Costing price cannot be changed because this item has stock quantity, stock value, or transaction history.'
+            ], 422);
+        }
+
+        $updated = $service->update($product->id, $data);
         return response()->json($updated->load(['units','comboItems.itemProduct']));
     }
 
     public function destroy(Product $product)
     {
+        $service = app(ProductService::class);
+
+        if (!$service->canBeDeleted($product)) {
+            return response()->json([
+                'message' => 'This product/service cannot be deleted because it has quantity, value, or transaction history.'
+            ], 422);
+        }
+
         $product->delete();
         return response()->json(['message' => 'Deleted']);
     }

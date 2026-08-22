@@ -113,7 +113,13 @@ class ProductService
             $openingDate = $data['opening_date'] ?? null;
 
             // 1) stock table update + movement create
-            $this->stockService->addOpeningStock($product, $warehouseId, $openingQty, $unitCost, $openingDate);
+            $stock = $this->stockService->addOpeningStock($product, $warehouseId, $openingQty, $unitCost, $openingDate);
+
+            // 1.a) keep product-level stock totals in sync
+            $product->update([
+                'current_stock_in_base_uom' => $stock->quantity_on_hand,
+                'weighted_avg_cost' => $stock->avg_cost,
+            ]);
 
             // 2) accounting journal (Inventory DR, Opening Balances CR)
             $this->openingStockJournalService->createOpeningStockJournal($product, $openingQty, $unitCost, $openingDate);
@@ -220,12 +226,36 @@ class ProductService
         return $product;
     }
 
+    public function canBeDeleted(Product $product): bool
+    {
+        return $this->canEditCostingPrice($product);
+    }
+
+    public function canEditCostingPrice(Product $product): bool
+    {
+        $hasStockQuantity = (float) ($product->current_stock_in_base_uom ?? 0) > 0;
+        $hasStockValue = ((float) ($product->current_stock_in_base_uom ?? 0) * (float) ($product->weighted_avg_cost ?? 0)) > 0;
+
+        if ($hasStockQuantity || $hasStockValue) {
+            return false;
+        }
+
+        $hasLedgerHistory = $product->inventoryLedger()->exists()
+            || $product->salesOrderItems()->exists()
+            || $product->salesInvoiceItems()->exists()
+            || $product->salesReturnItems()->exists()
+            || $product->purchaseOrderItems()->exists()
+            || $product->purchaseBillItems()->exists();
+
+        return !$hasLedgerHistory;
+    }
+
     public function paginate(array $filters)
     {
         /** @var Builder $q */
         $q = Product::query()->where('company_id', auth('sanctum')->user()->company_id);
-        // Only load units - comboItems relationship has schema issues
-        $q->with(['units', 'productUoms.uom']); // Removed: 'comboItems.itemProduct'
+        // Load units, product UOMs, base unit and stock details for display
+        $q->with(['units', 'productUoms.uom', 'baseUom', 'stocks']);
 
         $q->when(!empty($filters['q']), function (Builder $qr) use ($filters) {
             $term = $filters['q'];

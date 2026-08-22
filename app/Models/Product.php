@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\ProductStock;
 use Illuminate\Database\Eloquent\Model;
 
 class Product extends Model
@@ -35,6 +36,11 @@ class Product extends Model
     public function baseUom()
     {
         return $this->belongsTo(UnitOfMeasure::class, 'base_uom_id');
+    }
+
+    public function stocks()
+    {
+        return $this->hasMany(ProductStock::class);
     }
 
     public function inventoryLedger()

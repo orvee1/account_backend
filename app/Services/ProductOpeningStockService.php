@@ -40,11 +40,12 @@ class ProductOpeningStockService
 
         $companyId = (int) $product->company_id;
 
-        $inventory = $this->getInventoryAccount($companyId);
+        // Prefer a dedicated 'Stock in Hand' ledger under Inventory for opening stock
+        $stockInHand = $this->getStockInHandAccount($companyId);
         $openingEquity = $this->getOpeningEquity($companyId);
 
-        if (!$inventory || !$openingEquity) {
-            throw new \Exception('Required chart accounts are missing (Inventory / Opening Balances). Run ChartAccountSeeder.');
+        if (!$stockInHand || !$openingEquity) {
+            throw new \Exception('Required chart accounts are missing (Stock in Hand / Opening Balances). Run ChartAccountSeeder.');
         }
 
         // idempotency: already created?
@@ -59,7 +60,7 @@ class ProductOpeningStockService
             return $existing;
         }
 
-        return DB::transaction(function () use ($product, $qty, $cost, $amount, $inventory, $openingEquity, $entryDate) {
+        return DB::transaction(function () use ($product, $qty, $cost, $amount, $stockInHand, $openingEquity, $entryDate) {
 
             $je = JournalEntry::create([
                 'entry_date'     => $entryDate ? Carbon::parse($entryDate) : Carbon::today(),
@@ -70,11 +71,11 @@ class ProductOpeningStockService
                 'created_by'     => $product->created_by ?? auth()->id(),
             ]);
 
-            // DR Inventory
+            // DR Stock in Hand (Inventory -> Stock in Hand ledger)
             JournalLine::create([
                 'journal_entry_id' => $je->id,
                 'company_id'       => $product->company_id,
-                'account_id'       => $inventory->id,
+                'account_id'       => $stockInHand->id,
                 'debit'            => $amount,
                 'credit'           => 0,
                 'narration'        => "Opening stock (Qty: {$qty}, UnitCost: {$cost}) - {$product->name}",
@@ -92,6 +93,85 @@ class ProductOpeningStockService
 
             return $je;
         });
+    }
+
+    public function getStockInHandAccount(int $companyId): ?ChartAccount
+    {
+        // Try common slug first
+        $acct = ChartAccount::query()
+            ->where('company_id', $companyId)
+            ->where('slug', 'stock-in-hand')
+            ->where('type', 'ledger')
+            ->first();
+
+        if ($acct) return $acct;
+
+        // Try common ledger names
+        $acct = ChartAccount::query()
+            ->where('company_id', $companyId)
+            ->where('type', 'ledger')
+            ->where(function ($q) {
+                $q->where('name', 'Stock in Hand Ledger')
+                  ->orWhere('name', 'Stock in Hand');
+            })->first();
+
+        if ($acct) return $acct;
+
+        // Try creating under Inventory group if present
+        $inventoryGroup = ChartAccount::query()
+            ->where('company_id', $companyId)
+            ->where('type', 'group')
+            ->where('slug', 'inventory')
+            ->first();
+
+        if ($inventoryGroup) {
+            $acct = ChartAccount::query()->firstOrCreate(
+                [
+                    'company_id' => $companyId,
+                    'parent_id'  => $inventoryGroup->id,
+                    'name'       => 'Stock in Hand Ledger',
+                ],
+                [
+                    'type' => 'ledger',
+                    'slug' => 'stock-in-hand-ledger',
+                ]
+            );
+
+            if (blank($acct->path) || $acct->path === '/') {
+                $acct->path = rtrim($inventoryGroup->path ?? '', '/') . '/' . $acct->id;
+                $acct->save();
+            }
+
+            return $acct;
+        }
+
+        // Fallback: create under Current Asset
+        $parent = ChartAccount::query()
+            ->where('company_id', $companyId)
+            ->where('type', 'group')
+            ->where('slug', 'current-asset')
+            ->first();
+
+        if (!$parent) return null;
+
+        $acct = ChartAccount::query()->firstOrCreate(
+            [
+                'company_id' => $companyId,
+                'parent_id'  => $parent->id,
+                'name'       => 'Stock in Hand',
+            ],
+            [
+                'type' => 'ledger',
+                'slug' => 'stock-in-hand',
+            ]
+        );
+
+        if (blank($acct->path) || $acct->path === '/') {
+            $acct->path = rtrim($parent->path ?? '', '/') . '/' . $acct->id;
+            $acct->save();
+        }
+
+        return $acct;
     }
 
     public function getInventoryAccount(int $companyId): ?ChartAccount

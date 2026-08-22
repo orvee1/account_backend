@@ -224,12 +224,18 @@ class ChartAccountController extends Controller
                 'normal_balance' => 'debit',
                 'children' => [
                     ['name' => 'Current Assets', 'type' => 'group', 'children' => [
-                        ['name' => 'Cash and Bank', 'type' => 'group', 'children' => [
+                        ['name' => 'Cash & Cash Equivalent', 'type' => 'group', 'children' => [
                             ['name' => 'Petty Cash', 'type' => 'ledger'],
                             ['name' => 'Main Bank Account', 'type' => 'ledger'],
                         ]],
                         ['name' => 'Accounts Receivable', 'type' => 'ledger'],
-                        ['name' => 'Inventory', 'type' => 'ledger'],
+                        ['name' => 'Inventory', 'type' => 'group', 'children' => [
+                            ['name' => 'Stock in Hand', 'type' => 'group', 'children' => [
+                                ['name' => 'Stock in Hand Ledger', 'type' => 'ledger'],
+                            ]],
+                            ['name' => 'Work-In-Progress', 'type' => 'group'],
+                            ['name' => 'Raw Material', 'type' => 'group'],
+                        ]],
                     ]],
                     ['name' => 'Fixed Assets', 'type' => 'group', 'children' => [
                         ['name' => 'Furniture & Fixtures', 'type' => 'ledger'],
