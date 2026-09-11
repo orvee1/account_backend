@@ -6,9 +6,14 @@ use App\Http\Controllers\Controller;
 use App\Models\Customer;
 use App\Models\Receipt;
 use Illuminate\Http\Request;
+use App\Services\AccountingPostingService;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class ReceiptController extends Controller
 {
+    public function __construct(private AccountingPostingService $postingService) {}
+
     public function index(Request $request)
     {
         $filters = $request->only(['q', 'customer_id', 'payment_mode', 'status', 'per_page']);
@@ -36,15 +41,15 @@ class ReceiptController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'customer_id' => 'nullable|exists:customers,id',
+            'customer_id' => ['nullable', Rule::exists('customers', 'id')->where('company_id', auth()->user()->company_id)->whereNull('deleted_at')],
             'customer_name' => 'nullable|string',
             'receipt_date' => 'required|date',
-            'amount_received' => 'required|numeric|min:0',
+            'amount_received' => 'required|numeric|gt:0',
             'payment_mode' => 'required|in:cash,cheque,bank,online',
             'reference_number' => 'nullable|string',
             'description' => 'nullable|string',
-            'status' => 'nullable|string',
-            'receipt_number' => 'nullable|string',
+            'status' => 'nullable|in:draft,completed',
+            'receipt_number' => ['nullable', 'string', 'max:255', Rule::unique('receipts', 'receipt_number')],
         ]);
 
         if (empty($validated['customer_id']) && !empty($validated['customer_name'])) {
@@ -58,9 +63,13 @@ class ReceiptController extends Controller
         $validated['company_id'] = auth()->user()->company_id;
         $validated['recorded_by'] = auth()->id();
         $validated['status'] = $validated['status'] ?? 'completed';
-        $validated['receipt_number'] = $validated['receipt_number'] ?? ('RCP-' . time());
+        $validated['receipt_number'] = $validated['receipt_number'] ?? ('RCP-' . \Illuminate\Support\Str::uuid());
 
-        $receipt = Receipt::create($validated);
+        $receipt = DB::transaction(function () use ($validated) {
+            $receipt = Receipt::create($validated);
+            $this->postJournal($receipt);
+            return $receipt;
+        });
 
         return response()->json($receipt->load('customer'), 201);
     }
@@ -76,15 +85,15 @@ class ReceiptController extends Controller
         $this->ensureCompanyAccess($receipt->company_id);
 
         $validated = $request->validate([
-            'customer_id' => 'nullable|exists:customers,id',
+            'customer_id' => ['nullable', Rule::exists('customers', 'id')->where('company_id', auth()->user()->company_id)->whereNull('deleted_at')],
             'customer_name' => 'nullable|string',
             'receipt_date' => 'required|date',
-            'amount_received' => 'required|numeric|min:0',
+            'amount_received' => 'required|numeric|gt:0',
             'payment_mode' => 'required|in:cash,cheque,bank,online',
             'reference_number' => 'nullable|string',
             'description' => 'nullable|string',
-            'status' => 'nullable|string',
-            'receipt_number' => 'nullable|string',
+            'status' => 'nullable|in:draft,completed',
+            'receipt_number' => ['nullable', 'string', 'max:255', Rule::unique('receipts', 'receipt_number')->ignore($receipt->id)],
         ]);
 
         if (empty($validated['customer_id']) && !empty($validated['customer_name'])) {
@@ -95,7 +104,10 @@ class ReceiptController extends Controller
             return response()->json(['message' => 'Customer not found'], 422);
         }
 
-        $receipt->update($validated);
+        DB::transaction(function () use ($receipt, $validated) {
+            $receipt->update($validated);
+            $this->postJournal($receipt);
+        });
 
         return response()->json($receipt->load('customer'));
     }
@@ -103,7 +115,10 @@ class ReceiptController extends Controller
     public function destroy(Receipt $receipt)
     {
         $this->ensureCompanyAccess($receipt->company_id);
-        $receipt->delete();
+        DB::transaction(function () use ($receipt) {
+            $this->postingService->deleteForReference($receipt->company_id, Receipt::class, $receipt->id);
+            $receipt->delete();
+        });
 
         return response()->json(['message' => 'Receipt deleted']);
     }
@@ -114,6 +129,27 @@ class ReceiptController extends Controller
             ->where('company_id', auth()->user()->company_id)
             ->where('name', $name)
             ->value('id');
+    }
+
+    private function postJournal(Receipt $receipt): void
+    {
+        if ($receipt->status !== 'completed') {
+            $this->postingService->deleteForReference($receipt->company_id, Receipt::class, $receipt->id);
+            return;
+        }
+
+        $this->postingService->post([
+            'company_id' => $receipt->company_id,
+            'reference_type' => Receipt::class,
+            'reference_id' => $receipt->id,
+            'entry_date' => $receipt->receipt_date->toDateString(),
+            'description' => "Customer Receipt #{$receipt->receipt_number}",
+            'created_by' => $receipt->recorded_by,
+            'lines' => [
+                ['key' => $receipt->payment_mode === 'cash' ? 'cash' : 'bank', 'debit' => (float) $receipt->amount_received, 'credit' => 0],
+                ['customer_id' => $receipt->customer_id, 'debit' => 0, 'credit' => (float) $receipt->amount_received],
+            ],
+        ]);
     }
 
     private function ensureCompanyAccess(?int $companyId): void

@@ -19,7 +19,14 @@ return [
                         'type' => 'group',
                         'children' => [
                             ['name' => 'Cash in Hand', 'code' => '1.1.1.1', 'type' => 'ledger'],
-                            ['name' => 'Cash at Bank', 'code' => '1.1.1.2', 'type' => 'group'],
+                            [
+                                'name' => 'Cash at Bank',
+                                'code' => '1.1.1.2',
+                                'type' => 'group',
+                                'children' => [
+                                    ['name' => 'Cash at Bank', 'code' => '1.1.1.2.1', 'type' => 'ledger'],
+                                ],
+                            ],
                         ],
                     ],
                     [

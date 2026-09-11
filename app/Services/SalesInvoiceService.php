@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\InventoryLedger;
 use App\Models\Product;
+use App\Models\ProductStock;
 use App\Models\ProductUom;
 use App\Models\SalesInvoice;
 use App\Models\SalesInvoiceItem;
@@ -31,7 +32,7 @@ class SalesInvoiceService
             $invoice = SalesInvoice::create([
                 'company_id' => $companyId,
                 'customer_id' => $payload['customer_id'],
-                'invoice_no' => $payload['invoice_no'] ?? 'INV-' . now()->timestamp,
+                'invoice_no' => $payload['invoice_no'] ?? 'INV-' . \Illuminate\Support\Str::uuid()->toString(),
                 'invoice_date' => $payload['invoice_date'],
                 'due_date' => Arr::get($payload, 'due_date'),
                 'warehouse_id' => Arr::get($payload, 'warehouse_id'),
@@ -48,7 +49,7 @@ class SalesInvoiceService
             $this->postInvoiceJournal($invoice, $userId);
 
             return $invoice->load(['customer', 'items.product', 'payments']);
-        });
+        }, 3);
     }
 
     public function updateInvoice(SalesInvoice $invoice, array $payload, int $userId): SalesInvoice
@@ -94,20 +95,21 @@ class SalesInvoiceService
         $this->assertSameCompany($invoice);
 
         return DB::transaction(function () use ($invoice, $payload) {
+            $invoice = SalesInvoice::whereKey($invoice->id)->lockForUpdate()->firstOrFail();
             $userId = auth('sanctum')->id() ?? Auth::id();
 
             $return = SalesReturn::create([
                 'company_id' => $invoice->company_id,
                 'customer_id' => $invoice->customer_id,
                 'sales_invoice_id' => $invoice->id,
-                'return_no' => Arr::get($payload, 'return_no', 'RET-' . now()->timestamp),
+                'return_no' => Arr::get($payload, 'return_no', 'RET-' . \Illuminate\Support\Str::uuid()->toString()),
                 'return_date' => Arr::get($payload, 'return_date', now()->toDateString()),
                 'reason' => Arr::get($payload, 'reason'),
                 'notes' => Arr::get($payload, 'notes'),
                 'created_by' => $userId,
             ]);
 
-            $totals = $this->attachReturnItems($return, $payload['items'] ?? []);
+            $totals = $this->attachReturnItems($return, $invoice, $payload['items'] ?? []);
 
             $return->update([
                 'subtotal' => $totals['subtotal'],
@@ -115,6 +117,9 @@ class SalesInvoiceService
                 'tax_amount' => $totals['tax_amount'],
                 'total_amount' => $totals['total_amount'],
             ]);
+
+            $this->postSalesReturnJournal($return->refresh(), $totals);
+            $this->refreshInvoicePaymentStatus($invoice);
 
             return $return->load(['customer', 'items.product']);
         });
@@ -130,16 +135,16 @@ class SalesInvoiceService
                 throw new Exception('Payment amount must be greater than zero.');
             }
 
-            $invoice->refresh();
-            $remaining = round((float) $invoice->total_amount - (float) $invoice->paid_amount, 2);
+            $invoice = SalesInvoice::whereKey($invoice->id)->lockForUpdate()->firstOrFail();
+            $remaining = round((float) $invoice->total_amount - (float) $invoice->returns()->sum('total_amount') - (float) $invoice->paid_amount, 2);
             if ($amount > $remaining) {
-                throw new Exception('Payment amount cannot exceed the invoice due amount.');
+                throw \Illuminate\Validation\ValidationException::withMessages(['amount'=>'Payment amount cannot exceed the invoice due amount after return credits.']);
             }
 
             $payment = SalesPayment::create([
                 'company_id' => $invoice->company_id,
                 'sales_invoice_id' => $invoice->id,
-                'payment_no' => Arr::get($payload, 'payment_no', 'PAY-' . now()->timestamp),
+                'payment_no' => Arr::get($payload, 'payment_no', 'PAY-' . \Illuminate\Support\Str::uuid()->toString()),
                 'payment_date' => Arr::get($payload, 'payment_date', now()->toDateString()),
                 'amount' => $amount,
                 'payment_method' => Arr::get($payload, 'payment_method'),
@@ -188,7 +193,7 @@ class SalesInvoiceService
             $lineGrossAmount = round($quantity * $unitPriceOriginal, 4);
 
             if ($this->isStockTracked($product) && (float) $product->current_stock_in_base_uom < $saleQtyInBase) {
-                throw new Exception("Insufficient stock for product: {$product->name}.");
+                throw \Illuminate\Validation\ValidationException::withMessages(['items' => "Insufficient stock for product: {$product->name}."]);
             }
 
             $tradeDiscountPct = (float) Arr::get($itemData, 'trade_discount_pct', 0);
@@ -244,8 +249,10 @@ class SalesInvoiceService
             ]);
 
             if ($this->isStockTracked($product)) {
+                $warehouseId = $invoice->warehouse_id ?? $product->warehouse_id;
                 $newStock = round((float) $product->current_stock_in_base_uom - $saleQtyInBase, 4);
                 $product->update(['current_stock_in_base_uom' => $newStock]);
+                $this->adjustWarehouseStock($invoice->company_id, $product, $warehouseId, -1 * $saleQtyInBase, (float) $product->current_stock_in_base_uom + $saleQtyInBase, $weightedAvgCost);
 
                 InventoryLedger::create([
                     'product_id' => $product->id,
@@ -319,11 +326,7 @@ class SalesInvoiceService
             'narration' => "Sales invoice {$invoice->invoice_no}",
         ];
 
-        if ($invoice->customer?->chart_account_id) {
-            $receivableLine['account_id'] = $invoice->customer->chart_account_id;
-        } else {
-            $receivableLine['key'] = 'accounts_receivable';
-        }
+        $receivableLine['customer_id'] = $invoice->customer_id;
 
         $lines = [$receivableLine];
 
@@ -396,6 +399,11 @@ class SalesInvoiceService
 
     private function reverseInvoiceImpact(SalesInvoice $invoice): void
     {
+        $invoice = SalesInvoice::whereKey($invoice->id)->lockForUpdate()->firstOrFail();
+        if ($invoice->payments()->exists() || $invoice->returns()->exists()) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['invoice'=>['Reverse payments and returns before changing this invoice.']]);
+        }
+        app(DocumentCorrectionService::class)->assertLatest('sale', $invoice->id, $invoice->items()->pluck('product_id')->all());
         $invoice->loadMissing('items.product');
 
         foreach ($invoice->items as $item) {
@@ -411,6 +419,7 @@ class SalesInvoiceService
             $restoredQty = (float) $item->quantity_in_base_uom;
             $newStock = round((float) $product->current_stock_in_base_uom + $restoredQty, 4);
             $product->update(['current_stock_in_base_uom' => $newStock]);
+            $this->adjustWarehouseStock($invoice->company_id, $product, $invoice->warehouse_id ?? $product->warehouse_id, $restoredQty, (float) $product->current_stock_in_base_uom - $restoredQty, (float) $product->weighted_avg_cost);
 
             InventoryLedger::create([
                 'product_id' => $product->id,
@@ -430,29 +439,91 @@ class SalesInvoiceService
         $this->postingService->deleteForReference($invoice->company_id, SalesInvoice::class, $invoice->id);
     }
 
-    private function attachReturnItems(SalesReturn $return, array $items): array
+    private function attachReturnItems(SalesReturn $return, SalesInvoice $invoice, array $items): array
     {
+        $invoice->loadMissing('items');
+
         $subtotal = 0.0;
         $discountTotal = 0.0;
         $taxTotal = 0.0;
+        $cogsTotal = 0.0;
 
         foreach ($items as $item) {
-            $lineTotal = (float) $item['quantity'] * (float) $item['unit_price'];
+            $invoiceItemId = (int) Arr::get($item, 'sales_invoice_item_id');
+            /** @var SalesInvoiceItem|null $invoiceItem */
+            $invoiceItem = $invoice->items->firstWhere('id', $invoiceItemId);
+            if (! $invoiceItem) {
+                throw new Exception('Sales return item does not belong to the selected invoice.');
+            }
+
+            if ((int) $invoiceItem->product_id !== (int) $item['product_id']) {
+                throw new Exception('Sales return product does not match the source invoice item.');
+            }
+
+            $quantity = (float) $item['quantity'];
+            $alreadyReturned = \App\Models\SalesReturnItem::where('sales_invoice_item_id', $invoiceItem->id)
+                ->whereHas('salesReturn', fn ($q) => $q->whereNull('deleted_at'))->sum('quantity');
+            if ($quantity <= 0 || $quantity + (float) $alreadyReturned > (float) $invoiceItem->quantity + 0.000001) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['items'=>['Return quantity exceeds the unreturned invoice quantity.']]);
+            }
+            $lineSubtotal = round($quantity * (float) $item['unit_price'], 4);
             $discountAmount = (float) Arr::get($item, 'discount_amount', 0);
             $taxAmount = (float) Arr::get($item, 'tax_amount', 0);
+            $lineTotal = round($lineSubtotal - $discountAmount + $taxAmount, 4);
 
             SalesReturnItem::create([
                 'sales_return_id' => $return->id,
-                'sales_invoice_item_id' => Arr::get($item, 'sales_invoice_item_id'),
+                'sales_invoice_item_id' => $invoiceItem->id,
                 'product_id' => $item['product_id'],
-                'quantity' => $item['quantity'],
+                'quantity' => $quantity,
                 'unit_price' => $item['unit_price'],
                 'discount_amount' => $discountAmount,
                 'tax_amount' => $taxAmount,
-                'line_total' => $lineTotal - $discountAmount + $taxAmount,
+                'line_total' => $lineTotal,
             ]);
 
-            $subtotal += $lineTotal;
+            $product = Product::query()
+                ->where('company_id', $return->company_id)
+                ->lockForUpdate()
+                ->findOrFail($item['product_id']);
+
+            if ($this->isStockTracked($product)) {
+                $sourceQuantity = (float) $invoiceItem->quantity;
+                $sourceBaseQuantity = (float) $invoiceItem->quantity_in_base_uom;
+                $baseQtyPerUnit = $sourceQuantity > 0 ? $sourceBaseQuantity / $sourceQuantity : 1;
+                $returnedBaseQty = round($quantity * $baseQtyPerUnit, 6);
+                $unitCost = (float) $invoiceItem->weighted_avg_cost;
+                $returnedCost = round($returnedBaseQty * $unitCost, 4);
+                $oldStock = (float) $product->current_stock_in_base_uom;
+                $oldAvg = (float) $product->weighted_avg_cost;
+                $newStock = round($oldStock + $returnedBaseQty, 4);
+                $newAvg = $newStock > 0
+                    ? round((($oldStock * $oldAvg) + $returnedCost) / $newStock, 4)
+                    : 0.0;
+
+                $product->update([
+                    'current_stock_in_base_uom' => $newStock,
+                    'weighted_avg_cost' => $newAvg,
+                ]);
+
+                $this->adjustWarehouseStock($return->company_id, $product, $invoice->warehouse_id ?? $product->warehouse_id, $returnedBaseQty, $oldStock, $newAvg);
+
+                InventoryLedger::create([
+                    'product_id' => $product->id,
+                    'reference_id' => $return->id,
+                    'reference_type' => 'sales_return',
+                    'qty_in' => $returnedBaseQty,
+                    'qty_out' => 0,
+                    'qty_balance' => $newStock,
+                    'unit_cost' => $unitCost,
+                    'total_cost' => $returnedCost,
+                    'new_weighted_avg_cost' => $newAvg,
+                ]);
+
+                $cogsTotal = round($cogsTotal + $returnedCost, 4);
+            }
+
+            $subtotal += $lineSubtotal;
             $discountTotal += $discountAmount;
             $taxTotal += $taxAmount;
         }
@@ -464,7 +535,76 @@ class SalesInvoiceService
             'discount_total' => round($discountTotal, 2),
             'tax_amount' => round($taxTotal, 2),
             'total_amount' => round($totalAmount, 2),
+            'revenue_debit' => round($subtotal - $discountTotal, 2),
+            'receivable_credit' => round($totalAmount, 2),
+            'cogs_credit' => round($cogsTotal, 2),
         ];
+    }
+
+    private function postSalesReturnJournal(SalesReturn $return, array $totals): void
+    {
+        $revenueDebit = round((float) $totals['revenue_debit'], 2);
+        $taxDebit = round((float) $totals['tax_amount'], 2);
+        $receivableCredit = round((float) $totals['receivable_credit'], 2);
+        $cogsCredit = round((float) $totals['cogs_credit'], 2);
+
+        if ($receivableCredit <= 0 && $cogsCredit <= 0) {
+            return;
+        }
+
+        $lines = [];
+
+        if ($revenueDebit > 0) {
+            $lines[] = [
+                'key' => 'sales_revenue',
+                'debit' => $revenueDebit,
+                'credit' => 0,
+                'narration' => "Sales return {$return->return_no}",
+            ];
+        }
+
+        if ($taxDebit > 0) {
+            $lines[] = [
+                'key' => 'tax_payable',
+                'debit' => $taxDebit,
+                'credit' => 0,
+                'narration' => "Sales tax reversed {$return->return_no}",
+            ];
+        }
+
+        if ($receivableCredit > 0) {
+            $lines[] = [
+                'customer_id' => $return->customer_id,
+                'debit' => 0,
+                'credit' => $receivableCredit,
+                'narration' => "Receivable reduced {$return->return_no}",
+            ];
+        }
+
+        if ($cogsCredit > 0) {
+            $lines[] = [
+                'key' => 'inventory',
+                'debit' => $cogsCredit,
+                'credit' => 0,
+                'narration' => "Inventory restored {$return->return_no}",
+            ];
+            $lines[] = [
+                'key' => 'cogs',
+                'debit' => 0,
+                'credit' => $cogsCredit,
+                'narration' => "COGS reversed {$return->return_no}",
+            ];
+        }
+
+        $this->postingService->post([
+            'company_id' => $return->company_id,
+            'reference_type' => SalesReturn::class,
+            'reference_id' => $return->id,
+            'entry_date' => $return->return_date?->toDateString() ?? now()->toDateString(),
+            'description' => "Sales Return #{$return->return_no}",
+            'created_by' => Auth::id() ?? $return->created_by,
+            'lines' => $lines,
+        ]);
     }
 
     private function postPaymentJournal(SalesPayment $payment, SalesInvoice $invoice): void
@@ -484,7 +624,7 @@ class SalesInvoiceService
                     'narration' => "Payment received for {$invoice->invoice_no}",
                 ],
                 [
-                    'key' => 'accounts_receivable',
+                    'customer_id' => $invoice->customer_id,
                     'debit' => 0,
                     'credit' => (float) $payment->amount,
                     'narration' => "Receivable cleared for {$invoice->invoice_no}",
@@ -493,16 +633,16 @@ class SalesInvoiceService
         ]);
     }
 
-    private function refreshInvoicePaymentStatus(SalesInvoice $invoice): void
+    public function refreshInvoicePaymentStatus(SalesInvoice $invoice): void
     {
         $invoice->refresh();
         $paidAmount = round((float) $invoice->payments()->sum('amount'), 2);
-        $totalAmount = round((float) $invoice->total_amount, 2);
+        $totalAmount = max(0, round((float) $invoice->total_amount - (float) $invoice->returns()->sum('total_amount'), 2));
 
-        $status = 'unpaid';
+        $status = 'sent';
         if ($paidAmount > 0 && $paidAmount < $totalAmount) {
             $status = 'partially_paid';
-        } elseif ($paidAmount >= $totalAmount && $totalAmount > 0) {
+        } elseif ($paidAmount >= $totalAmount) {
             $status = 'paid';
         }
 
@@ -546,5 +686,45 @@ class SalesInvoiceService
     private function isStockTracked(Product $product): bool
     {
         return in_array($product->product_type, ['Stock', 'Combo'], true);
+    }
+
+    private function adjustWarehouseStock(
+        int $companyId,
+        Product $product,
+        mixed $warehouseId,
+        float $quantityDelta,
+        float $fallbackQuantity,
+        float $avgCost
+    ): void {
+        if (blank($warehouseId)) {
+            return;
+        }
+
+        $stock = ProductStock::query()
+            ->where('company_id', $companyId)
+            ->where('product_id', $product->id)
+            ->where('warehouse_id', (int) $warehouseId)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $stock) {
+            $stock = ProductStock::create([
+                'company_id' => $companyId,
+                'product_id' => $product->id,
+                'warehouse_id' => (int) $warehouseId,
+                'quantity_on_hand' => round($fallbackQuantity, 4),
+                'avg_cost' => round($avgCost, 4),
+            ]);
+        }
+
+        $newQuantity = round((float) $stock->quantity_on_hand + $quantityDelta, 4);
+        if ($newQuantity < -0.0001) {
+            throw new Exception("Warehouse stock cannot become negative for product: {$product->name}.");
+        }
+
+        $stock->update([
+            'quantity_on_hand' => max(0, $newQuantity),
+            'avg_cost' => round($avgCost, 4),
+        ]);
     }
 }

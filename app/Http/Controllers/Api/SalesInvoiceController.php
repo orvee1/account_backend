@@ -68,7 +68,13 @@ class SalesInvoiceController extends Controller
     public function createReturn(Request $request, SalesInvoice $salesInvoice)
     {
         abort_if((int) $salesInvoice->company_id !== (int) auth('sanctum')->user()->company_id, 404);
-        $return = $this->service->createReturn($salesInvoice, $request->all());
+        $payload = $request->validate([
+            'return_no'=>'nullable|string|max:100', 'return_date'=>'required|date', 'reason'=>'nullable|string',
+            'items'=>'required|array|min:1', 'items.*.sales_invoice_item_id'=>'required|integer',
+            'items.*.product_id'=>'required|integer', 'items.*.quantity'=>'required|numeric|gt:0',
+            'items.*.unit_price'=>'required|numeric|min:0', 'items.*.discount_amount'=>'nullable|numeric|min:0', 'items.*.tax_amount'=>'nullable|numeric|min:0',
+        ]);
+        $return = $this->service->createReturn($salesInvoice, $payload);
         return response()->json([
             'message' => 'Sales Return created successfully',
             'return' => $return,
@@ -79,7 +85,8 @@ class SalesInvoiceController extends Controller
     public function recordPayment(Request $request, SalesInvoice $salesInvoice)
     {
         abort_if((int) $salesInvoice->company_id !== (int) auth('sanctum')->user()->company_id, 404);
-        $payment = $this->service->recordPayment($salesInvoice, $request->all());
+        $payload = $request->validate(['amount'=>'required|numeric|gt:0','payment_no'=>'nullable|string|max:100','payment_date'=>'required|date','payment_method'=>'nullable|string','reference_no'=>'nullable|string','notes'=>'nullable|string']);
+        $payment = $this->service->recordPayment($salesInvoice, $payload);
         return response()->json([
             'message' => 'Payment recorded successfully',
             'payment' => $payment,

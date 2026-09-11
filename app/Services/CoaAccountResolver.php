@@ -10,13 +10,31 @@ class CoaAccountResolver
 {
     public function resolveByKey(int $companyId, string $mapKey): ChartAccount
     {
-        $reference = config("coa_map.{$mapKey}");
+        $references = config("coa_map.{$mapKey}");
 
-        if (! is_string($reference) || trim($reference) === '') {
+        if (is_string($references)) {
+            $references = [$references];
+        }
+
+        if (! is_array($references) || count($references) === 0) {
             throw new InvalidArgumentException("COA map key [{$mapKey}] is not configured.");
         }
 
-        return $this->resolveReference($companyId, $reference, $mapKey);
+        $lastException = null;
+
+        foreach ($references as $reference) {
+            if (! is_string($reference) || trim($reference) === '') {
+                continue;
+            }
+
+            try {
+                return $this->resolveReference($companyId, $reference, $mapKey);
+            } catch (ModelNotFoundException|InvalidArgumentException $exception) {
+                $lastException = $exception;
+            }
+        }
+
+        throw $lastException ?? new InvalidArgumentException("COA map key [{$mapKey}] is not configured.");
     }
 
     public function resolveReference(int $companyId, string $reference, ?string $context = null): ChartAccount

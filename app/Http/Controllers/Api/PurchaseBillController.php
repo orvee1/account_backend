@@ -34,8 +34,9 @@ class PurchaseBillController extends Controller
     }
 
     // GET /api/purchase-bills/{bill}
-    public function show(PurchaseBill $bill)
+    public function show(PurchaseBill $purchaseBill)
     {
+        $bill = $purchaseBill;
         $bill->load(['vendor','items.product']);
         return PurchaseBillResource::make($bill);
     }

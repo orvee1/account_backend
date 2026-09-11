@@ -15,7 +15,7 @@ class StoreSalesInvoiceRequest extends FormRequest
     {
         return [
             'customer_id'                 => ['required', 'integer', 'exists:customers,id'],
-            'invoice_no'                  => ['nullable', 'string', 'max:100'],
+            'invoice_no'                  => ['nullable', 'string', 'max:100', \Illuminate\Validation\Rule::unique('sales_invoices', 'invoice_no')->ignore($this->route('sales_invoice') ?? $this->route('salesInvoice'))],
             'invoice_date'                => ['required', 'date'],
             'due_date'                    => ['nullable', 'date', 'after_or_equal:invoice_date'],
             'warehouse_id'                => ['nullable', 'integer', 'exists:warehouses,id'],

@@ -140,6 +140,7 @@ class ReportController extends Controller
         $equity = [
             'commonStock' => 0,
             'retainedEarnings' => 0,
+            'currentProfitLoss' => 0,
             'otherComprehensiveIncome' => 0,
         ];
 
@@ -204,6 +205,12 @@ class ReportController extends Controller
                 }
             }
         }
+
+        $equity['currentProfitLoss'] = $this->computeNetIncome(
+            $companyId,
+            Carbon::parse($asOfDate)->startOfYear()->toDateString(),
+            $asOfDate
+        );
 
         return response()->json([
             'as_of_date' => $asOfDate,

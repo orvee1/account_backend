@@ -65,7 +65,7 @@ Route::post('password/reset', [ResetPasswordController::class, 'reset'])
 | Protected Routes (auth:sanctum, verified)
 |--------------------------------------------------------------------------
 */
-Route::middleware(['auth:sanctum', 'verified'])->group(function () {
+Route::middleware(['auth:sanctum', 'verified', \App\Http\Middleware\CompanyApiAccess::class, \App\Http\Middleware\AccountingIdempotency::class])->group(function () {
 
     Route::get('/user', function (Request $request) {
         /** @var \App\Models\CompanyUser|null $user */

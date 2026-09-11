@@ -21,8 +21,8 @@ class SalesReturnController extends Controller
             ->where('company_id', auth()->user()->company_id)
             ->when($request->filled('q'), function ($q) use ($request) {
                 $keyword = "%{$request->q}%";
-                $q->where('return_no', 'like', $keyword)
-                    ->orWhereHas('customer', fn($c) => $c->where('name', 'like', $keyword));
+                $q->where(fn ($search) => $search->where('return_no', 'like', $keyword)
+                    ->orWhereHas('customer', fn($c) => $c->where('name', 'like', $keyword)));
             })
             ->when($request->filled('customer_id'), fn($q) => $q->where('customer_id', $request->integer('customer_id')))
             ->when($request->filled('date_from'), fn($q) => $q->whereDate('return_date', '>=', $request->date('date_from')))
@@ -49,7 +49,7 @@ class SalesReturnController extends Controller
     // DELETE /api/sales-returns/{id}
     public function destroy(SalesReturn $salesReturn)
     {
-        $salesReturn->delete();
+        app(\App\Services\DocumentCorrectionService::class)->deleteReturn($salesReturn);
         return response()->noContent();
     }
 }

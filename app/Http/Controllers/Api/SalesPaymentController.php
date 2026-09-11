@@ -21,8 +21,8 @@ class SalesPaymentController extends Controller
             ->where('company_id', auth()->user()->company_id)
             ->when($request->filled('q'), function ($q) use ($request) {
                 $keyword = "%{$request->q}%";
-                $q->where('payment_no', 'like', $keyword)
-                    ->orWhere('reference_no', 'like', $keyword);
+                $q->where(fn ($search) => $search->where('payment_no', 'like', $keyword)
+                    ->orWhere('reference_no', 'like', $keyword));
             })
             ->when($request->filled('sales_invoice_id'), fn($q) => $q->where('sales_invoice_id', $request->integer('sales_invoice_id')))
             ->when($request->filled('date_from'), fn($q) => $q->whereDate('payment_date', '>=', $request->date('date_from')))
@@ -50,7 +50,7 @@ class SalesPaymentController extends Controller
     // DELETE /api/sales-payments/{id}
     public function destroy(SalesPayment $salesPayment)
     {
-        $salesPayment->delete();
+        $this->service->deletePayment($salesPayment);
         return response()->noContent();
     }
 }

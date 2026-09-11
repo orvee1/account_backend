@@ -6,6 +6,7 @@ use App\Models\Product;
 use App\Models\ProductBatch;
 use App\Models\ProductUnit;
 use App\Models\ProductUom;
+use App\Models\ProductStock;
 use App\Models\PurchaseBill;
 use App\Models\PurchaseBillItem;
 use App\Models\PurchaseReturn;
@@ -44,6 +45,7 @@ class PurchaseService
                 'bill_no'                  => $payload['bill_no'],
                 'bill_date'                => $payload['bill_date'],
                 'due_date'                 => Arr::get($payload, 'due_date'),
+                'warehouse_id'             => Arr::get($payload, 'warehouse_id'),
                 'supplier_ref_no'          => Arr::get($payload, 'supplier_ref_no'),
                 'notes'                    => Arr::get($payload, 'notes'),
                 'vat_mode'                 => Arr::get($payload, 'vat_mode', 'exclusive'),
@@ -99,6 +101,7 @@ class PurchaseService
             $priceUom = ProductUom::query()
                 ->where('product_id', $product->id)
                 ->findOrFail($itemData['price_uom_id']);
+            $warehouseId = Arr::get($itemData, 'warehouse_id', $bill->warehouse_id ?? $product->warehouse_id);
 
             $quantity = (float)$itemData['quantity'];
             $unitPrice = (float)$itemData['unit_price'];
@@ -137,9 +140,9 @@ class PurchaseService
             $netUnitCost = 0;
             if ($qtyInBase > 0) {
                 if ($isVatRegistered) {
-                    $netUnitCost = $lineSubtotal / $qtyInBase;
+                    $netUnitCost = ($lineSubtotal - ($bill->vat_mode === 'inclusive' ? $vatAmount : 0)) / $qtyInBase;
                 } else {
-                    $netUnitCost = ($lineSubtotal + $vatAmount) / $qtyInBase;
+                    $netUnitCost = ($lineSubtotal + ($bill->vat_mode === 'exclusive' ? $vatAmount : 0)) / $qtyInBase;
                 }
             }
 
@@ -163,6 +166,8 @@ class PurchaseService
                     'current_stock_in_base_uom' => $newStock,
                     'weighted_avg_cost'         => $newAvg,
                 ]);
+
+                $this->adjustWarehouseStock($bill->company_id, $product, $warehouseId, $qtyInBase, $oldStock, $newAvg);
 
                 // Inventory Ledger
                 InventoryLedger::create([
@@ -203,6 +208,7 @@ class PurchaseService
                 'weighted_avg_cost_before' => $oldAvg,
                 'weighted_avg_cost_after'  => $newAvg,
                 'line_total'               => $lineSubtotal + ($bill->vat_mode === 'exclusive' ? $vatAmount : 0),
+                'warehouse_id'             => $warehouseId,
             ]);
 
             // Accumulate Totals
@@ -264,7 +270,7 @@ class PurchaseService
 
         if ((float) $bill->total_amount > 0) {
             $lines[] = [
-                'key' => 'accounts_payable',
+                'vendor_id' => $bill->vendor_id,
                 'debit' => 0,
                 'credit' => round((float) $bill->total_amount, 2),
                 'narration' => "Vendor payable {$bill->bill_no}",
@@ -367,6 +373,10 @@ class PurchaseService
 
     private function reverseBillImpact(PurchaseBill $bill)
     {
+        $bill = PurchaseBill::whereKey($bill->id)->lockForUpdate()->firstOrFail();
+        if ($bill->status !== 'draft') {
+            app(DocumentCorrectionService::class)->assertLatest('purchase', $bill->id, $bill->items()->pluck('product_id')->all());
+        }
         // 1. Reverse Stock and WAC for each item (Only if confirmed)
         if ($bill->status !== 'draft') {
             foreach ($bill->items as $item) {
@@ -394,6 +404,8 @@ class PurchaseService
                     'current_stock_in_base_uom' => $newStock,
                     'weighted_avg_cost'         => $newAvg,
                 ]);
+
+                $this->adjustWarehouseStock($bill->company_id, $product, $item->warehouse_id ?? $bill->warehouse_id ?? $product->warehouse_id, -1 * $removedQty, $oldStock, $newAvg);
 
                 // Insert reversal in inventory ledger
                 InventoryLedger::create([
@@ -446,6 +458,8 @@ class PurchaseService
                 'updated_by'     => $userId,
             ]);
 
+            $this->postPurchaseReturnJournal($return->refresh(), $totals['inventory_credit']);
+
             return $return->load(['vendor', 'items.product']);
         });
     }
@@ -454,14 +468,15 @@ class PurchaseService
     {
         $subtotal = 0.0;
         $discountTotal = 0.0;
+        $inventoryCredit = 0.0;
 
         foreach ($items as $item) {
             $product = Product::query()
                 ->where('company_id', $return->company_id)
                 ->lockForUpdate()
                 ->findOrFail($item['product_id']);
-            $qtyUnit = ProductUnit::query()->findOrFail($item['qty_unit_id']);
-            $rateUnit = ProductUnit::query()->findOrFail($item['rate_unit_id']);
+            $qtyUnit = $product->units()->findOrFail($item['qty_unit_id']);
+            $rateUnit = $product->units()->findOrFail($item['rate_unit_id']);
 
             $qtyBase = round((float) $item['qty'] * (float) $qtyUnit->factor, 6);
             $rateBase = round(((float) $item['rate_per_unit'] / max((float) $rateUnit->factor, 0.000001)), 6);
@@ -472,6 +487,7 @@ class PurchaseService
             if ($discountAmount <= 0 && $discountPercent > 0) {
                 $discountAmount = round($lineSubtotal * ($discountPercent / 100), 4);
             }
+            $lineTotal = round($lineSubtotal - $discountAmount, 4);
 
             $batchId = null;
             $batchNo = Arr::get($item, 'batch_no');
@@ -501,7 +517,7 @@ class PurchaseService
                 'discount_percent' => $discountPercent,
                 'discount_amount' => $discountAmount,
                 'line_subtotal' => $lineSubtotal,
-                'line_total' => round($lineSubtotal - $discountAmount, 4),
+                'line_total' => $lineTotal,
                 'warehouse_id' => $warehouseId,
                 'batch_id' => $batchId,
                 'batch_no' => $batchNo,
@@ -510,6 +526,29 @@ class PurchaseService
             ]);
 
             if (in_array($product->product_type, ['Stock', 'Combo'], true)) {
+                $oldStock = (float) $product->current_stock_in_base_uom;
+                if ($qtyBase > $oldStock + 0.0001) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['items' => "Purchase return quantity exceeds available stock for product: {$product->name}."]);
+                }
+
+                $oldAvg = (float) $product->weighted_avg_cost;
+                $oldValue = $oldStock * $oldAvg;
+                $newStock = round($oldStock - $qtyBase, 4);
+                $remainingValue = round($oldValue - $lineTotal, 4);
+                if ($remainingValue < -0.01 || ($newStock <= 0 && abs($remainingValue) > 0.01)) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['items' => 'The return rate would leave an invalid inventory value. Review the return valuation before posting.']);
+                }
+                $newAvg = $newStock > 0
+                    ? round(max(0, $remainingValue) / $newStock, 4)
+                    : 0.0;
+
+                $product->update([
+                    'current_stock_in_base_uom' => $newStock,
+                    'weighted_avg_cost' => $newAvg,
+                ]);
+
+                $this->adjustWarehouseStock($return->company_id, $product, $warehouseId, -1 * $qtyBase, $oldStock, $newAvg);
+
                 InventoryMovement::create([
                     'company_id' => $return->company_id,
                     'product_id' => $product->id,
@@ -522,13 +561,119 @@ class PurchaseService
                     'meta' => ['return_no' => $return->return_no],
                     'created_by' => $userId,
                 ]);
+
+                InventoryLedger::create([
+                    'product_id' => $product->id,
+                    'reference_id' => $return->id,
+                    'reference_type' => 'purchase_return',
+                    'qty_in' => 0,
+                    'qty_out' => $qtyBase,
+                    'qty_balance' => $newStock,
+                    'unit_cost' => $qtyBase > 0 ? round($lineTotal / $qtyBase, 4) : $rateBase,
+                    'total_cost' => $lineTotal,
+                    'new_weighted_avg_cost' => $newAvg,
+                ]);
+
+                $inventoryCredit = round($inventoryCredit + $lineTotal, 4);
             }
 
             $subtotal = round($subtotal + $lineSubtotal, 4);
             $discountTotal = round($discountTotal + $discountAmount, 4);
         }
 
-        return ['subtotal' => $subtotal, 'discount_total' => $discountTotal];
+        return [
+            'subtotal' => $subtotal,
+            'discount_total' => $discountTotal,
+            'inventory_credit' => $inventoryCredit,
+        ];
+    }
+
+    private function postPurchaseReturnJournal(PurchaseReturn $return, float $inventoryCredit): void
+    {
+        $payableDebit = round((float) $return->total_amount, 2);
+        $inventoryCredit = round($inventoryCredit, 2);
+        $taxCredit = round(max(0, $payableDebit - $inventoryCredit), 2);
+
+        if ($payableDebit <= 0 || ($inventoryCredit + $taxCredit) <= 0) {
+            return;
+        }
+
+        $lines = [
+            [
+                'vendor_id' => $return->vendor_id,
+                'debit' => $payableDebit,
+                'credit' => 0,
+                'narration' => "Purchase return {$return->return_no}",
+            ],
+        ];
+
+        if ($inventoryCredit > 0) {
+            $lines[] = [
+                'key' => 'inventory',
+                'debit' => 0,
+                'credit' => $inventoryCredit,
+                'narration' => "Inventory returned to supplier {$return->return_no}",
+            ];
+        }
+
+        if ($taxCredit > 0) {
+            $lines[] = [
+                'key' => 'input_vat_receivable',
+                'debit' => 0,
+                'credit' => $taxCredit,
+                'narration' => "Input VAT reversed {$return->return_no}",
+            ];
+        }
+
+        $this->postingService->post([
+            'company_id' => $return->company_id,
+            'reference_type' => PurchaseReturn::class,
+            'reference_id' => $return->id,
+            'entry_date' => $return->return_date?->toDateString() ?? now()->toDateString(),
+            'description' => "Purchase Return #{$return->return_no}",
+            'created_by' => Auth::id() ?? $return->created_by,
+            'lines' => $lines,
+        ]);
+    }
+
+    private function adjustWarehouseStock(
+        int $companyId,
+        Product $product,
+        mixed $warehouseId,
+        float $quantityDelta,
+        float $fallbackQuantity,
+        float $avgCost
+    ): void {
+        if (blank($warehouseId)) {
+            return;
+        }
+
+        $stock = ProductStock::query()
+            ->where('company_id', $companyId)
+            ->where('product_id', $product->id)
+            ->where('warehouse_id', (int) $warehouseId)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $stock) {
+            $stock = ProductStock::create([
+                'company_id' => $companyId,
+                'product_id' => $product->id,
+                'warehouse_id' => (int) $warehouseId,
+                'quantity_on_hand' => round($fallbackQuantity, 4),
+                'avg_cost' => round($avgCost, 4),
+            ]);
+        }
+
+        $newQuantity = round((float) $stock->quantity_on_hand + $quantityDelta, 4);
+        if ($newQuantity < -0.0001) {
+            throw new Exception("Warehouse stock cannot become negative for product: {$product->name}.");
+        }
+
+        $stock->update([
+            'quantity_on_hand' => max(0, $newQuantity),
+            'avg_cost' => round($avgCost, 4),
+        ]);
     }
 
     private function getSetting(int $companyId, string $key, $default)

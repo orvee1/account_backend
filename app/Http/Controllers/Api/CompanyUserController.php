@@ -18,6 +18,7 @@ class CompanyUserController extends Controller
         $perPage = max(5, min(200, $perPage));
 
         $query = CompanyUser::query()
+            ->where('company_id', $request->user()->company_id)
             ->with('company:id,name')
             ->when($request->filled('q'), fn ($q) => $q->search($request->q))
             ->when($request->filled('company_id'), fn ($q) => $q->forCompany($request->company_id))
@@ -149,6 +150,10 @@ class CompanyUserController extends Controller
             'permissions'  => ['nullable'], // array|string
         ]);
 
+        if ($companyUser->role === 'owner' && $data['status'] !== 'active') {
+            abort(409, 'The company owner must remain active.');
+        }
+
         // Owner constraints
         if (($data['role'] ?? null) === 'owner') {
             $existsOwner = CompanyUser::where('company_id', $data['company_id'])
@@ -260,6 +265,7 @@ class CompanyUserController extends Controller
      */
     public function toggleStatus(CompanyUser $companyUser)
     {
+        abort_if($companyUser->role === 'owner' && $companyUser->status === 'active', 409, 'The company owner must remain active.');
         $next = $companyUser->status === 'active' ? 'inactive' : 'active';
         $payload = ['status' => $next];
 

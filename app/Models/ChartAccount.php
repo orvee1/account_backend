@@ -83,6 +83,11 @@ class ChartAccount extends Model
         return $this->type === 'ledger';
     }
 
+    public function getIsPostableAttribute(): bool
+    {
+        return $this->type === 'ledger' && (bool) $this->is_active;
+    }
+
     /* ---------------- Helpers ---------------- */
 
     /**

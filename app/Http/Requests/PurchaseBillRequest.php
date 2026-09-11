@@ -27,7 +27,9 @@ class PurchaseBillRequest extends FormRequest
             'bill_date'                => ['required','date'],
             'due_date'                 => ['nullable','date'],
             'supplier_ref_no'          => ['nullable','string','max:100'],
+            'warehouse_id'             => ['nullable','integer','exists:warehouses,id'],
             'vat_mode'                 => ['required','string','in:exclusive,inclusive'],
+            'status'                   => ['nullable','string','in:draft,confirmed'],
             'bill_discount_amt'        => ['nullable','numeric','min:0'],
             'bill_discount_account_id' => ['nullable','integer','exists:chart_accounts,id'],
             'notes'                    => ['nullable','string'],
@@ -43,6 +45,7 @@ class PurchaseBillRequest extends FormRequest
             'items.*.line_discount_amt'  => ['nullable','numeric','min:0'],
             'items.*.vat_rate'           => ['nullable','numeric','min:0'],
             'items.*.ait_rate'           => ['nullable','numeric','min:0'],
+            'items.*.warehouse_id'        => ['nullable','integer','exists:warehouses,id'],
         ];
     }
 }

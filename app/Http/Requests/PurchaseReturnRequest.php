@@ -23,7 +23,7 @@ class PurchaseReturnRequest extends FormRequest
     {
         return [
             'vendor_id'   => ['required','integer','exists:vendors,id'],
-            'return_no'   => ['required','string','max:100'],
+            'return_no'   => ['required','string','max:100', 'unique:purchase_returns,return_no'],
             'return_date' => ['required','date'],
             'warehouse_id'=> ['nullable','integer','exists:warehouses,id'],
             'notes'       => ['nullable','string'],

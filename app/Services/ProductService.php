@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Product;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class ProductService
 {
@@ -14,6 +15,11 @@ class ProductService
     ) {}
 
     public function create(array $data): Product
+    {
+        return DB::transaction(fn () => $this->createProduct($data));
+    }
+
+    private function createProduct(array $data): Product
     {
         $companyId = auth('sanctum')->user()->company_id;
 
@@ -54,7 +60,6 @@ class ProductService
             $product->units()->delete();
             foreach ($data['units'] as $u) {
                 $product->units()->create([
-                    'company_id'    => auth('sanctum')->user()->company_id,
                     'name'    => $u['name'],
                     'factor'  => $u['factor'],
                     'is_base' => $u['is_base'],
@@ -137,10 +142,16 @@ class ProductService
             }
         }
 
+        $this->ensureReturnUnits($product);
         return $product;
     }
 
     public function update(int $id, array $data): Product
+    {
+        return DB::transaction(fn () => $this->updateProduct($id, $data));
+    }
+
+    private function updateProduct(int $id, array $data): Product
     {
         $product = Product::findOrFail($id);
 
@@ -175,7 +186,6 @@ class ProductService
             $product->units()->delete();
             foreach (($data['units'] ?? []) as $u) {
                 $product->units()->create([
-                    'company_id' => auth('sanctum')->user()->company_id,
                     'name'    => $u['name'],
                     'factor'  => $u['factor'],
                     'is_base' => $u['is_base'],
@@ -223,7 +233,20 @@ class ProductService
             }
         }
 
+        $this->ensureReturnUnits($product);
         return $product;
+    }
+
+    private function ensureReturnUnits(Product $product): void
+    {
+        // Purchase returns still reference product_units. Expose equivalent units
+        // for products created through the newer product_uoms form as well.
+        foreach ($product->productUoms()->with('uom')->get() as $uom) {
+            $product->units()->firstOrCreate([
+                'name' => $uom->uom->name,
+                'factor' => $uom->conversion_factor,
+            ], ['is_base' => (bool) $uom->is_base_uom]);
+        }
     }
 
     public function canBeDeleted(Product $product): bool

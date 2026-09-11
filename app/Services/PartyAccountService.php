@@ -9,6 +9,33 @@ use Illuminate\Support\Str;
 
 class PartyAccountService
 {
+    public function resolveCustomer(int $companyId, int $customerId): ChartAccount
+    {
+        $customer = Customer::where('company_id', $companyId)->lockForUpdate()->findOrFail($customerId);
+        return $this->resolveLinkedAccount($customer);
+    }
+
+    public function resolveVendor(int $companyId, int $vendorId): ChartAccount
+    {
+        $vendor = Vendor::where('company_id', $companyId)->lockForUpdate()->findOrFail($vendorId);
+        return $this->resolveLinkedAccount($vendor);
+    }
+
+    private function resolveLinkedAccount(Customer|Vendor $party): ChartAccount
+    {
+        if ($party->chart_account_id) {
+            $account = ChartAccount::where('company_id', $party->company_id)->findOrFail($party->chart_account_id);
+        } else {
+            $account = $party instanceof Customer ? $this->createCustomerAccount($party) : $this->createVendorAccount($party);
+            if (!$account) {
+                throw new \InvalidArgumentException('The company chart of accounts is missing the party account group.');
+            }
+            $party->update(['chart_account_id' => $account->id]);
+        }
+
+        return app(CoaAccountResolver::class)->assertPostable($account);
+    }
+
     public function createVendorAccount(Vendor $vendor): ?ChartAccount
     {
         $parent = $this->getVendorPayableGroup($vendor->company_id);

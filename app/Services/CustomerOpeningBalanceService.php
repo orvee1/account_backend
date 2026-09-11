@@ -27,7 +27,7 @@ class CustomerOpeningBalanceService
         }
         $companyId = $customer->company_id;
         // find accounts
-        $accountReceivable = $this->getAccountReceivable($companyId);
+        $accountReceivable = app(PartyAccountService::class)->resolveCustomer($companyId, $customer->id);
         $customerAdvance  = $this->getCustomerAdvance($companyId);
         $openingEquity  = $this->getOpeningEquity($companyId);
 
@@ -47,7 +47,7 @@ class CustomerOpeningBalanceService
 
         return DB::transaction(function () use ($customer, $amount, $type, $accountReceivable, $customerAdvance, $openingEquity) {
             $je = JournalEntry::create([
-                'entry_date'       => Carbon::today(),
+                'entry_date'       => $customer->opening_balance_date ?? Carbon::today(),
                 'company_id'       => $customer->company_id,
                 'reference_id'     => $customer->id,
                 'reference_type'   => Customer::class,

@@ -25,6 +25,13 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Wildcard listeners run after model-specific audit callbacks.
+        \Illuminate\Support\Facades\Event::listen('eloquent.creating: *', function ($event, $models) {
+            \App\Support\CompanyAuditIdentity::stamp($models[0], true);
+        });
+        \Illuminate\Support\Facades\Event::listen('eloquent.updating: *', function ($event, $models) {
+            \App\Support\CompanyAuditIdentity::stamp($models[0], false);
+        });
         // 1) Company Observer attach (এটাই default COA অটো-সিড করবে)
         Company::observe(CompanyObserver::class);
 

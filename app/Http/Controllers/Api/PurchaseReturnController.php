@@ -46,7 +46,7 @@ class PurchaseReturnController extends Controller
 
     public function destroy(PurchaseReturn $purchaseReturn)
     {
-        $purchaseReturn->delete();
+        app(\App\Services\DocumentCorrectionService::class)->deleteReturn($purchaseReturn);
         return response()->noContent();
     }
 }

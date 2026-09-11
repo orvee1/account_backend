@@ -133,6 +133,13 @@ class AccountingPostingService
             return $this->coaResolver->assertPostable($account, "account_id [{$line['account_id']}]");
         }
 
+        if (isset($line['customer_id'])) {
+            return app(PartyAccountService::class)->resolveCustomer($companyId, (int) $line['customer_id']);
+        }
+        if (isset($line['vendor_id'])) {
+            return app(PartyAccountService::class)->resolveVendor($companyId, (int) $line['vendor_id']);
+        }
+
         $key = $line['key'] ?? $line['coa_key'] ?? null;
         if (is_string($key) && $key !== '') {
             return $this->coaResolver->resolveByKey($companyId, $key);

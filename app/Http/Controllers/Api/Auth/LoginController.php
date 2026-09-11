@@ -33,7 +33,7 @@ class LoginController extends Controller
             ->first();
          
 
-        if ($user && Hash::check($request->password,$user->password)) {
+        if ($user && $user->status === 'active' && \App\Models\Company::whereKey($user->company_id)->where('status', 'active')->exists() && Hash::check($request->password,$user->password)) {
             RateLimiter::clear($throttleKey);
             Auth::login($user);
             $user->tokens()->delete();
